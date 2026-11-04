@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Перекупы — ролик v3</title>
+<style>
+  @font-face { font-family: Osw; src: url(fonts/Oswald-VF.ttf); font-weight: 200 700; }
+  @font-face { font-family: Mono; src: url(fonts/JetBrainsMono-VF.ttf); font-weight: 100 800; }
+  @font-face { font-family: Russo; src: url(fonts/RussoOne-Regular.ttf); }
+  html, body { margin: 0; background: #000; }
+  #gl { position: absolute; left: -99999px; }
+  #out { display: block; }
+</style>
+<script type="importmap">{"imports":{"three":"./three/build/three.module.js","three/addons/":"./three/examples/jsm/"}}</script>
+</head>
+<body>
+<canvas id="out" width="1080" height="1920"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const W = 1080, H = 1920;
+// ---------------------------------------------------------------- palette
+const C = {
+  ink: 0x0a1018, teal: 0x12303f, yel: 0xffd21f, org: 0xff8a2a, grn: 0x39d98a, red: 0xff4848, paper: 0xeef1f5,
+};
+const CSS = { ink: '#0a1018', yel: '#ffd21f', org: '#ff8a2a', grn: '#39d98a', red: '#ff4848', paper: '#eef1f5', grey: '#8794a8', dim: '#3a4658', panel: '#152131', panel2: '#1e2e42' };
+
+// ---------------------------------------------------------------- utils
+const cl = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const pr = (t, a, d) => cl((t - a) / d);
+const L = (a, b, k) => a + (b - a) * k;
+const E = {
+  out: t => 1 - Math.pow(1 - cl(t), 3),
+  out5: t => 1 - Math.pow(1 - cl(t), 5),
+  inout: t => { t = cl(t); return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; },
+  in: t => cl(t) ** 3,
+  back: (t, s = 1.7) => { t = cl(t) - 1; return t * t * ((s + 1) * t + s) + 1; },
+};
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+
+// ---------------------------------------------------------------- renderer
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.domElement.id = 'gl';
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const scene = new THREE.Scene();
+scene.environment = envTex;
+const cam = new THREE.PerspectiveCamera(35, W / H, 0.05, 400);
+const out = document.getElementById('out');
+const octx = out.getContext('2d');
+
+// ---------------------------------------------------------------- textures
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); draw(g, w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  t.userData = { c, g, draw };
+  return t;
+}
+function redraw(tex, ...args) { const { c, g, draw } = tex.userData; g.clearRect(0, 0, c.width, c.height); draw(g, c.width, c.height, ...args); tex.needsUpdate = true; }
+function rr(g, x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+function font(px, w = 700, fam = 'Osw') { return `${w} ${px}px ${fam}`; }
+const IMG = {};
+function loadImg(k, src) { return new Promise(res => { const i = new Image(); i.onload = () => { IMG[k] = i; res(); }; i.src = src; }); }
+
+const ICONS = {
+  phone(g, x, y, s, col) { g.strokeStyle = col; g.lineWidth = s * 0.06; rr(g, x - s * .3, y - s * .5, s * .6, s, s * .1); g.stroke(); g.beginPath(); g.arc(x - s * .12, y - s * .35, s * .07, 0, 7); g.stroke(); g.beginPath(); g.arc(x + s * .06, y - s * .35, s * .07, 0, 7); g.stroke(); },
+  car(g, x, y, s, col) { g.strokeStyle = col; g.lineWidth = s * .06; rr(g, x - s * .5, y - s * .05, s, s * .3, s * .08); g.stroke(); g.beginPath(); g.moveTo(x - s * .3, y - s * .05); g.lineTo(x - s * .18, y - s * .3); g.lineTo(x + s * .2, y - s * .3); g.lineTo(x + s * .32, y - s * .05); g.stroke(); for (const o of [-.28, .28]) { g.beginPath(); g.arc(x + o * s, y + s * .27, s * .1, 0, 7); g.stroke(); } },
+  tool(g, x, y, s, col) { g.strokeStyle = col; g.lineWidth = s * .1; g.beginPath(); g.moveTo(x - s * .35, y + s * .35); g.lineTo(x + s * .1, y - s * .1); g.stroke(); g.lineWidth = s * .07; g.beginPath(); g.arc(x + s * .2, y - s * .2, s * .17, 0.6, 5.6); g.stroke(); },
+  console(g, x, y, s, col) { g.strokeStyle = col; g.lineWidth = s * .06; rr(g, x - s * .5, y - s * .22, s, s * .48, s * .2); g.stroke(); g.beginPath(); g.moveTo(x - s * .32, y); g.lineTo(x - s * .12, y); g.moveTo(x - s * .22, y - s * .1); g.lineTo(x - s * .22, y + s * .1); g.stroke(); g.fillStyle = col; g.beginPath(); g.arc(x + s * .22, y, s * .06, 0, 7); g.fill(); },
+  tv(g, x, y, s, col) { g.strokeStyle = col; g.lineWidth = s * .06; rr(g, x - s * .5, y - s * .32, s, s * .56, s * .05); g.stroke(); g.beginPath(); g.moveTo(x - s * .2, y + s * .38); g.lineTo(x + s * .2, y + s * .38); g.stroke(); },
+};
+
+function listingDraw(item, hl) {
+  return (g, w, h) => {
+    rr(g, 4, 4, w - 8, h - 8, 34); g.fillStyle = hl ? '#1f2a14' : CSS.panel; g.fill();
+    g.lineWidth = hl ? 10 : 4; g.strokeStyle = hl ? CSS.yel : '#2a3a50'; g.stroke();
+    rr(g, 30, 30, h - 60, h - 60, 24); g.fillStyle = CSS.panel2; g.fill();
+    ICONS[item.icon](g, 30 + (h - 60) / 2, h / 2, (h - 60) * .62, hl ? CSS.yel : '#9aa6b8');
+    const tx = h + 10;
+    g.fillStyle = CSS.paper; g.font = font(54, 500); g.textBaseline = 'alphabetic'; g.fillText(item.title, tx, 96);
+    g.fillStyle = hl ? CSS.yel : CSS.paper; g.font = font(92, 700); g.fillText(item.price, tx, 200);
+    g.fillStyle = CSS.grey; g.font = font(34, 500, 'Mono'); g.fillText(item.city, tx, h - 44);
+  };
+}
+const ITEMS = [
+  { icon: 'phone', title: 'iPhone 13 128 ГБ', price: '41 000 ₽', city: 'Москва · 2 мин' },
+  { icon: 'car', title: 'Kia Rio 2017', price: '820 000 ₽', city: 'Казань · 5 мин' },
+  { icon: 'tool', title: 'Перфоратор Makita', price: '6 500 ₽', city: 'Самара · 1 мин' },
+  { icon: 'console', title: 'PlayStation 5', price: '39 000 ₽', city: 'Уфа · 8 мин' },
+  { icon: 'tv', title: 'Телевизор 55"', price: '28 000 ₽', city: 'Пермь · 3 мин' },
+  { icon: 'phone', title: 'Samsung S23', price: '37 000 ₽', city: 'Омск · 4 мин' },
+  { icon: 'tool', title: 'Шуруповёрт DeWalt', price: '7 900 ₽', city: 'Тюмень · 6 мин' },
+  { icon: 'car', title: 'VW Polo 2016', price: '760 000 ₽', city: 'Ростов · 12 мин' },
+];
+const HERO = { icon: 'phone', title: 'iPhone 15 Pro 256 ГБ', price: '55 000 ₽', city: 'Казань · 4 мин назад' };
+
+// ---------------------------------------------------------------- materials / builders
+const M = {
+  dark: new THREE.MeshStandardMaterial({ color: 0x141c28, roughness: .8 }),
+  wall: new THREE.MeshStandardMaterial({ color: 0x1a2232, roughness: .95 }),
+  floor: new THREE.MeshStandardMaterial({ color: 0x0f141c, roughness: .6, metalness: .1 }),
+  wood: new THREE.MeshStandardMaterial({ color: 0x2a2018, roughness: .7 }),
+  fabric: new THREE.MeshStandardMaterial({ color: 0x2b3a58, roughness: 1 }),
+  fabric2: new THREE.MeshStandardMaterial({ color: 0x3d4c6c, roughness: 1 }),
+  phoneBody: new THREE.MeshStandardMaterial({ color: 0x24262c, roughness: .35, metalness: .8 }),
+  titanium: new THREE.MeshStandardMaterial({ color: 0x8c8780, roughness: .32, metalness: .95 }),
+  glassBlack: new THREE.MeshStandardMaterial({ color: 0x050608, roughness: .05, metalness: .3 }),
+  yelGlow: new THREE.MeshBasicMaterial({ color: C.yel }),
+  card: new THREE.MeshStandardMaterial({ color: 0x18222e, roughness: .5, metalness: .2 }),
+};
+function box(w, h, d, mat, r = 0.02) { const m = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2)), mat); m.castShadow = true; m.receiveShadow = true; return m; }
+function plane(w, h, map, opts = {}) {
+  const mat = opts.basic === false ? new THREE.MeshStandardMaterial({ map, transparent: true, roughness: .6 })
+    : new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: opts.depthWrite ?? false, toneMapped: false, side: THREE.DoubleSide, blending: opts.add ? THREE.AdditiveBlending : THREE.NormalBlending });
+  return new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+}
+function textTex(lines, o = {}) {
+  // lines: [{t, size, w, col, fam}]
+  const w = o.w || 1024, h = o.h || 256;
+  return canvasTex(w, h, (g) => {
+    let y = o.pad ?? 0;
+    const total = lines.reduce((s, l) => s + l.size * (l.lh || 1.1), 0);
+    y = (h - total) / 2;
+    for (const l of lines) {
+      g.font = font(l.size, l.w ?? 700, l.fam || 'Osw'); g.fillStyle = l.col || CSS.paper; g.textAlign = o.align || 'center'; g.textBaseline = 'top';
+      if (o.shadow) { g.shadowColor = o.shadow; g.shadowBlur = 40; }
+      g.fillText(l.t, o.align === 'left' ? 20 : w / 2, y);
+      y += l.size * (l.lh || 1.1);
+    }
+  });
+}
+function glowSprite(color, size, op = 1) {
+  const t = canvasTex(256, 256, (g) => { const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, 'rgba(255,255,255,.45)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256); });
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, color, blending: THREE.AdditiveBlending, transparent: true, opacity: op, depthWrite: false, toneMapped: false }));
+  s.scale.set(size, size, 1); return s;
+}
+function makePhone(screenTex, w = 0.76) {
+  const h = w * 2.05, g = new THREE.Group();
+  const body = box(w, h, 0.085, M.phoneBody, 0.1); g.add(body);
+  const scr = new THREE.Mesh(new RoundedBoxGeometry(w * 0.93, h * 0.955, 0.01, 3, 0.085), new THREE.MeshBasicMaterial({ map: screenTex, toneMapped: false }));
+  scr.position.z = 0.044; g.add(scr);
+  const isl = box(w * .3, w * .085, 0.005, new THREE.MeshBasicMaterial({ color: 0x000000 }), 0.04); isl.position.set(0, h * .44, 0.05); g.add(isl);
+  g.userData.screen = scr; g.userData.h = h;
+  return g;
+}
+function phoneScreen(draw) { return canvasTex(720, 1480, (g, w, h, ...a) => { g.fillStyle = '#070a10'; g.fillRect(0, 0, w, h); draw(g, w, h, ...a); }); }
+
+function notifDraw(g, w, h, k = 1, time = '07:00') {
+  g.fillStyle = CSS.paper; g.textAlign = 'center'; g.font = font(190, 300); g.fillText(time, w / 2, 360);
+  g.font = font(40, 400); g.fillStyle = CSS.grey; g.fillText('понедельник, 4 ноября', w / 2, 430);
+  if (k <= 0) return;
+  const y = 520, x = 36, ww = w - 72;
+  g.globalAlpha = cl(k * 2);
+  rr(g, x, y, ww, 330, 48); g.fillStyle = 'rgba(52,56,68,.95)'; g.fill();
+  g.save(); g.beginPath(); g.arc(x + 82, y + 82, 50, 0, 7); g.fillStyle = CSS.yel; g.fill(); g.clip();
+  if (IMG.face) g.drawImage(IMG.face, x + 22, y + 22, 120, 120); g.restore();
+  g.textAlign = 'left'; g.fillStyle = CSS.grey; g.font = font(34, 500); g.fillText('ПЕРЕКУПЫ · нейросеть', x + 160, y + 70);
+  g.fillStyle = CSS.paper; g.font = font(52, 700); g.fillText('Нашла выгодную сделку', x + 160, y + 128);
+  g.fillStyle = CSS.yel; g.font = font(40, 600); g.fillText('iPhone 15 Pro — 55 000 ₽', x + 40, y + 212);
+  g.fillStyle = CSS.grey; g.font = font(32, 500, 'Mono'); g.fillText('рынок 80 000 ₽ · Казань', x + 40, y + 272);
+  g.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------- Russia dot map data
+const RU = [[28, 60], [30, 69.5], [40, 67], [44, 68.5], [55, 68.5], [60, 69.5], [68, 72.5], [73, 72], [80, 73.5], [87, 75], [100, 77.5], [113, 73.7], [128, 73], [140, 72.5], [150, 71.5], [160, 69.7], [170, 70], [180, 68.5], [180, 65], [177, 62.5], [163, 60], [160, 54], [156, 51], [155, 57], [142, 59.3], [137, 54], [141, 52], [131, 43], [127, 49.5], [120, 53.3], [108, 49.5], [97, 50], [87, 49.2], [80, 51], [68, 54.5], [61, 51], [55, 51], [48, 47], [47, 42], [40, 43.5], [37, 46.5], [38, 47.5], [40, 49.5], [35, 52], [31, 56], [28, 56.5]];
+const CITIES = [['Москва', 37.6, 55.75], ['Санкт-Петербург', 30.3, 59.9], ['Казань', 49.1, 55.8], ['Екатеринбург', 60.6, 56.8], ['Новосибирск', 82.9, 55.0], ['Краснодар', 39.0, 45.0], ['Ростов', 39.7, 47.2], ['Самара', 50.1, 53.2], ['Уфа', 56.0, 54.7], ['Омск', 73.4, 55.0], ['Красноярск', 92.9, 56.0], ['Иркутск', 104.3, 52.3], ['Хабаровск', 135.0, 48.5], ['Владивосток', 131.9, 43.1], ['Якутск', 129.7, 62.0], ['Мурманск', 33.0, 68.9], ['Пермь', 56.2, 58.0], ['Тюмень', 65.5, 57.1]];
+const mapXY = (lon, lat) => [(lon - 100) * 0.16, -(lat - 60) * 0.24];
+function pip(x, y, poly) { let ins = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi) ins = !ins; } return ins; }
+
+// ================================================================ SETS
+const sets = {};
+const QUEUE = [];
+function set(name, build) { QUEUE.push([name, build]); }
+function buildSets() { for (const [name, build] of QUEUE) { const g = new THREE.Group(); g.visible = false; scene.add(g); sets[name] = { g, ...build(g) }; } }
+function lightRig(g, o = {}) {
+  const hemi = new THREE.HemisphereLight(o.sky ?? 0x4a6a8a, o.ground ?? 0x05070a, o.hemi ?? 0.5); g.add(hemi);
+  const key = new THREE.DirectionalLight(o.key ?? 0xffffff, o.keyI ?? 1.2); key.position.set(...(o.keyPos || [3, 6, 4]));
+  if (o.shadow) { key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.camera.left = -6; key.shadow.camera.right = 6; key.shadow.camera.top = 6; key.shadow.camera.bottom = -6; key.shadow.bias = -0.0005; key.shadow.radius = 4; }
+  g.add(key); g.add(key.target);
+  return { hemi, key };
+}
+
+// ---- A: building exterior at dawn
+set('building', (g) => {
+  lightRig(g, { hemi: .35, keyI: .3, sky: 0x6a7fa8 });
+  const skyT = canvasTex(64, 512, (c, w, h) => { const gr = c.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#060a16'); gr.addColorStop(.55, '#1a2240'); gr.addColorStop(.8, '#6a4250'); gr.addColorStop(1, '#c9785a'); c.fillStyle = gr; c.fillRect(0, 0, w, h); });
+  const sky = plane(120, 160, skyT); sky.position.set(0, 20, -60); g.add(sky);
+  const r = rng(4);
+  const winMatOff = new THREE.MeshStandardMaterial({ color: 0x0b1220, roughness: .2, metalness: .5 });
+  const winMatOn = new THREE.MeshBasicMaterial({ color: 0xffc070, toneMapped: false });
+  const winMatYel = new THREE.MeshBasicMaterial({ color: C.yel, toneMapped: false });
+  const facade = box(14, 30, 1, new THREE.MeshStandardMaterial({ color: 0x1b2230, roughness: .9 }), 0.05); facade.position.set(0, 7, -1); g.add(facade);
+  let target;
+  for (let row = 0; row < 16; row++) for (let col = 0; col < 7; col++) {
+    const x = -5.4 + col * 1.8, y = -6 + row * 1.7;
+    const hero = row === 6 && col === 3;
+    const on = hero || r() < .14;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.1), hero ? winMatYel : on ? winMatOn : winMatOff);
+    m.position.set(x, y, -0.48); g.add(m);
+    const sill = box(1.3, 0.08, 0.25, M.dark, 0.01); sill.position.set(x, y - 0.62, -0.38); g.add(sill);
+    if (hero) target = m;
+  }
+  // neighbouring blocks
+  for (const [x, z, h] of [[-14, -10, 22], [13, -12, 26], [-22, -25, 30], [24, -28, 20]]) {
+    const b = box(8, h, 6, new THREE.MeshStandardMaterial({ color: 0x0e141e, roughness: .9 }), .05); b.position.set(x, h / 2 - 8, z); g.add(b);
+    for (let i = 0; i < 26; i++) { if (r() < .5) continue; const m = new THREE.Mesh(new THREE.PlaneGeometry(.6, .6), r() < .3 ? winMatOn : winMatOff); m.position.set(x - 3 + r() * 6, -6 + r() * (h - 4), z + 3.01); g.add(m); }
+  }
+  const glow = glowSprite(C.yel, 6, .7); glow.position.copy(target.position).add(new THREE.Vector3(0, 0, .3)); g.add(glow);
+  g.fog = new THREE.Fog(0x0a1018, 12, 70);
+  return { target, glow };
+});
+
+// ---- bedroom (clock, bed, phone)
+set('bedroom', (g) => {
+  const amb = new THREE.HemisphereLight(0x3a5274, 0x050608, .35); g.add(amb);
+  const sun = new THREE.SpotLight(0xffa070, 60, 30, .5, .6, 1.2); sun.position.set(-6, 4, -1); sun.target.position.set(1, 0, 0);
+  sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024); sun.shadow.bias = -.0008; g.add(sun); g.add(sun.target);
+  const room = new THREE.Group(); g.add(room);
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), M.floor); fl.rotation.x = -Math.PI / 2; fl.receiveShadow = true; room.add(fl);
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(20, 8), M.wall); back.position.set(0, 4, -3); back.receiveShadow = true; room.add(back);
+  const left = new THREE.Mesh(new THREE.PlaneGeometry(20, 8), M.wall); left.rotation.y = Math.PI / 2; left.position.set(-3.5, 4, 0); left.receiveShadow = true; room.add(left);
+  // window in left wall: frame bars cast shadow (light comes through)
+  const winSky = canvasTex(64, 256, (c, w, h) => { const gr = c.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#2a3866'); gr.addColorStop(1, '#ff9a6a'); c.fillStyle = gr; c.fillRect(0, 0, w, h); });
+  const win = plane(2.2, 2.2, winSky); win.rotation.y = Math.PI / 2; win.position.set(-3.49, 2.6, 0.2); room.add(win);
+  left.material = M.wall;
+  for (const z of [-0.9, 0.2, 1.3]) { const bar = box(.12, 2.4, .12, M.dark, .01); bar.position.set(-3.4, 2.6, z); room.add(bar); }
+  for (const y of [1.5, 2.6, 3.7]) { const bar = box(.12, .12, 2.3, M.dark, .01); bar.position.set(-3.4, y, 0.2); room.add(bar); }
+  // bed
+  const bed = new THREE.Group(); room.add(bed);
+  const frame = box(2.4, .45, 3.4, M.wood, .05); frame.position.set(0, .25, 0); bed.add(frame);
+  const head = box(2.5, 1.3, .15, M.wood, .05); head.position.set(0, .8, -1.75); bed.add(head);
+  const mat = box(2.3, .3, 3.2, new THREE.MeshStandardMaterial({ color: 0xc8ccd6, roughness: 1 }), .12); mat.position.set(0, .6, 0); bed.add(mat);
+  const pillow = box(1.1, .22, .55, M.fabric2, .1); pillow.position.set(-.4, .85, -1.25); bed.add(pillow);
+  const headS = new THREE.Mesh(new THREE.SphereGeometry(.26, 24, 16), new THREE.MeshStandardMaterial({ color: 0x2a1e18, roughness: .9 })); headS.position.set(-.35, 1.0, -1.15); headS.castShadow = true; bed.add(headS);
+  const blanket = box(2.36, .32, 2.5, M.fabric, .16); blanket.position.set(0, .82, .35); bed.add(blanket);
+  const lump = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), M.fabric); lump.scale.set(.5, .22, 1.0); lump.position.set(-.35, .95, .1); lump.castShadow = true; bed.add(lump);
+  // nightstand
+  const ns = box(.8, .7, .6, M.wood, .04); ns.position.set(1.75, .35, -1.3); room.add(ns);
+  // digital clock
+  const clockTex = canvasTex(512, 220, (c, w, h, txt = '06:59') => { c.fillStyle = '#0b0605'; c.fillRect(0, 0, w, h); c.font = font(170, 800, 'Mono'); c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = '#2a120c'; c.fillText('88:88', w / 2, h / 2 + 6); c.fillStyle = CSS.org; c.shadowColor = CSS.org; c.shadowBlur = 30; c.fillText(txt, w / 2, h / 2 + 6); });
+  const clock = new THREE.Group(); room.add(clock);
+  const cbody = box(.5, .24, .16, new THREE.MeshStandardMaterial({ color: 0x111111, roughness: .3 }), .04); clock.add(cbody);
+  const cface = plane(.44, .19, clockTex); cface.position.z = .081; clock.add(cface);
+  clock.position.set(1.95, .82, -1.38); clock.rotation.y = -.35;
+  const clockLight = new THREE.PointLight(C.org, .6, 1.5); clockLight.position.set(1.95, .85, -1.1); room.add(clockLight);
+  // phone on nightstand
+  const scr = phoneScreen((c, w, h, k = 0) => notifDraw(c, w, h, k));
+  const phone = makePhone(scr, .2); phone.rotation.x = -Math.PI / 2; phone.rotation.z = .25; phone.position.set(1.55, .74, -1.2); room.add(phone);
+  const pl = new THREE.PointLight(C.yel, 0, 3, 1.5); pl.position.set(1.55, .95, -1.2); room.add(pl);
+  return { room, clockTex, phone, scr, pl, sun };
+});
+
+// ---- AI tunnel of cards
+set('tunnel', (g) => {
+  g.add(new THREE.HemisphereLight(0x557799, 0x0a0a0a, .6));
+  const k = new THREE.PointLight(C.yel, 30, 40, 1.5); k.position.set(0, 0, -20); g.add(k);
+  const texs = ITEMS.map(it => canvasTex(1024, 360, listingDraw(it)));
+  const cards = []; const r = rng(7);
+  for (let i = 0; i < 140; i++) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(2.0, .7), new THREE.MeshBasicMaterial({ map: texs[i % texs.length], transparent: true, toneMapped: false, side: THREE.DoubleSide }));
+    const a = r() * Math.PI * 2, rad = 1.6 + r() * 3.2;
+    m.userData = { a, rad, z0: -r() * 60, spin: (r() - .5) * .6 };
+    g.add(m); cards.push(m);
+  }
+  const face = plane(3.2, 3.2, new THREE.CanvasTexture(IMG.face)); face.material.map.colorSpace = THREE.SRGBColorSpace; face.position.set(0, 0, -28); g.add(face);
+  const fg = glowSprite(C.yel, 16, .6); fg.position.set(0, 0, -29); g.add(fg);
+  const countTex = canvasTex(1024, 300, (c, w, h, n = 0) => { c.textAlign = 'center'; c.font = font(190, 700); c.fillStyle = CSS.yel; c.shadowColor = 'rgba(255,210,31,.6)'; c.shadowBlur = 40; c.fillText(n.toLocaleString('ru-RU'), w / 2, 190); c.shadowBlur = 0; c.font = font(56, 500); c.fillStyle = CSS.paper; c.fillText('объявлений проверено за ночь', w / 2, 275); });
+  const count = plane(2.6, .76, countTex); g.add(count);
+  g.fog = new THREE.Fog(0x05080d, 6, 55);
+  return { cards, face, fg, count, countTex };
+});
+
+// ---- Russia map
+set('map', (g) => {
+  g.add(new THREE.HemisphereLight(0x557799, 0x05070a, .5));
+  const poly = RU.map(([a, b]) => mapXY(a, b));
+  const pts = [];
+  for (let y = -5; y < 6; y += 0.17) for (let x = -14; x < 14.5; x += 0.17) if (pip(x, y, poly)) pts.push([x, y]);
+  const geo = new THREE.CylinderGeometry(.05, .05, .04, 6);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x2a5a78, toneMapped: false });
+  const inst = new THREE.InstancedMesh(geo, mat, pts.length);
+  const dm = new THREE.Object3D();
+  pts.forEach(([x, y], i) => { dm.position.set(x, 0, y); dm.updateMatrix(); inst.setMatrixAt(i, dm.matrix); });
+  g.add(inst);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 40), new THREE.MeshStandardMaterial({ color: 0x070b12, roughness: .9 })); ground.rotation.x = -Math.PI / 2; ground.position.y = -.03; g.add(ground);
+  const pillars = CITIES.map(([n, lon, lat]) => {
+    const [x, z] = mapXY(lon, lat);
+    const grp = new THREE.Group(); grp.position.set(x, 0, z);
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(.06, .06, 1, 10), new THREE.MeshBasicMaterial({ color: C.yel, transparent: true, opacity: .85, toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false }));
+    p.position.y = .5; grp.add(p);
+    const base = new THREE.Mesh(new THREE.RingGeometry(.1, .16, 24), new THREE.MeshBasicMaterial({ color: C.yel, side: THREE.DoubleSide, transparent: true, toneMapped: false })); base.rotation.x = -Math.PI / 2; base.position.y = .03; grp.add(base);
+    const gl = glowSprite(C.yel, 1.2, .8); gl.position.y = .1; grp.add(gl);
+    grp.userData = { n, lon, p, base, gl };
+    g.add(grp); return grp;
+  });
+  const kazan = pillars.find(p => p.userData.n === 'Казань');
+  const heroCard = plane(2.4, .84, canvasTex(1024, 360, listingDraw(HERO, true))); heroCard.position.copy(kazan.position); g.add(heroCard);
+  const spot = new THREE.SpotLight(C.yel, 0, 30, .35, .5); spot.position.set(kazan.position.x, 12, kazan.position.z); spot.target = kazan; g.add(spot);
+  g.fog = new THREE.Fog(0x05080d, 10, 45);
+  return { pillars, kazan, heroCard, spot };
+});
+
+// ---- iPhone hero
+set('iphone', (g) => {
+  g.add(new THREE.HemisphereLight(0x223344, 0x000000, .3));
+  const rimB = new THREE.SpotLight(0x5aa0ff, 220, 20, .5, .6); rimB.position.set(-4, 3, -3); g.add(rimB);
+  const rimY = new THREE.SpotLight(C.yel, 200, 20, .5, .6); rimY.position.set(4, 1, -2); g.add(rimY);
+  const key = new THREE.SpotLight(0xffffff, 120, 20, .5, .8); key.position.set(1, 3, 6); g.add(key);
+  const ph = new THREE.Group(); g.add(ph);
+  const w = 1.0, h = 2.05;
+  const body = box(w, h, .1, M.titanium, .14); ph.add(body);
+  const back = new THREE.Mesh(new RoundedBoxGeometry(w * .96, h * .975, .005, 3, .13), new THREE.MeshStandardMaterial({ color: 0x5c5852, roughness: .5, metalness: .55 })); back.position.z = -.05; back.rotation.y = Math.PI; ph.add(back);
+  const bump = box(.46, .46, .05, new THREE.MeshStandardMaterial({ color: 0x8a857c, roughness: .3, metalness: .9 }), .1); bump.position.set(.22, .73, -.07); ph.add(bump);
+  for (const [x, y] of [[.11, .84], [.11, .62], [.33, .73]]) {
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(.09, .09, .05, 32), new THREE.MeshStandardMaterial({ color: 0x2a2a2e, metalness: 1, roughness: .2 }));
+    ring.rotation.x = Math.PI / 2; ring.position.set(x, y, -.11); ph.add(ring);
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(.065, .065, .052, 32), new THREE.MeshStandardMaterial({ color: 0x0a0d18, metalness: .5, roughness: .05 }));
+    lens.rotation.x = Math.PI / 2; lens.position.set(x, y, -.112); ph.add(lens);
+  }
+  const scrMat = new THREE.MeshStandardMaterial({ color: 0x020203, roughness: .05, metalness: .2 });
+  const scr = new THREE.Mesh(new RoundedBoxGeometry(w * .94, h * .965, .01, 3, .12), scrMat); scr.position.z = .051; ph.add(scr);
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 48), new THREE.MeshStandardMaterial({ color: 0x0a0c10, roughness: .25, metalness: .6 })); floor.rotation.x = -Math.PI / 2; floor.position.y = -1.35; g.add(floor);
+  const title = plane(2.6, .5, textTex([{ t: 'iPhone 15 Pro · 256 ГБ', size: 96, w: 500 }], { w: 1400, h: 270 })); title.position.set(0, -1.75, .3); g.add(title);
+  return { ph };
+});
+
+// ---- price columns
+set('columns', (g) => {
+  lightRig(g, { hemi: .45, keyI: 1.6, shadow: true, keyPos: [-4, 8, 6] });
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), M.floor); fl.rotation.x = -Math.PI / 2; fl.receiveShadow = true; g.add(fl);
+  const grey = box(1.2, 1, 1.2, new THREE.MeshStandardMaterial({ color: 0x48546a, roughness: .5, metalness: .3 }), .06);
+  const yel = box(1.2, 1, 1.2, new THREE.MeshStandardMaterial({ color: C.yel, roughness: .35, metalness: .2, emissive: 0x3a2a00 }), .06);
+  grey.position.x = -.8; yel.position.x = .8; g.add(grey, yel);
+  const lg = plane(2.6, .9, textTex([{ t: '80 000 ₽', size: 150 }, { t: 'цена по рынку', size: 58, w: 400, col: CSS.grey }], { w: 1024, h: 360 }));
+  const ly = plane(2.6, .9, textTex([{ t: '55 000 ₽', size: 150, col: CSS.yel }, { t: 'в объявлении', size: 58, w: 400, col: CSS.grey }], { w: 1024, h: 360 }));
+  const pct = plane(2.4, 1.0, textTex([{ t: '−31%', size: 260, col: CSS.yel }], { w: 1024, h: 420, shadow: 'rgba(255,210,31,.6)' }));
+  g.add(lg, ly, pct);
+  const yl = new THREE.PointLight(C.yel, 0, 6); g.add(yl);
+  return { grey, yel, lg, ly, pct, yl };
+});
+
+// ---- stopwatch
+set('watch', (g) => {
+  lightRig(g, { hemi: .5, keyI: 1.4, keyPos: [2, 4, 6] });
+  const sw = new THREE.Group(); g.add(sw);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, .3, 64), new THREE.MeshStandardMaterial({ color: 0x1a2130, metalness: .8, roughness: .3 })); body.rotation.x = Math.PI / 2; sw.add(body);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.3, .09, 16, 80), new THREE.MeshStandardMaterial({ color: 0x9aa4b4, metalness: 1, roughness: .2 })); sw.add(rim);
+  const faceT = canvasTex(1024, 1024, (c, w, h, sec = 0) => {
+    c.fillStyle = '#0c121c'; c.beginPath(); c.arc(512, 512, 500, 0, 7); c.fill();
+    for (let i = 0; i < 60; i++) { const a = i / 60 * Math.PI * 2; c.strokeStyle = i % 5 ? '#3a4658' : '#9aa6b8'; c.lineWidth = i % 5 ? 4 : 10; c.beginPath(); c.moveTo(512 + Math.sin(a) * 440, 512 - Math.cos(a) * 440); c.lineTo(512 + Math.sin(a) * (i % 5 ? 410 : 380), 512 - Math.cos(a) * (i % 5 ? 410 : 380)); c.stroke(); }
+    c.strokeStyle = CSS.yel; c.lineWidth = 26; c.beginPath(); c.arc(512, 512, 470, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (sec / 60)); c.stroke();
+    c.fillStyle = CSS.yel; c.textAlign = 'center'; c.font = font(170, 800, 'Mono'); c.fillText('00:0' + Math.min(4, Math.floor(sec / 15 * 4 / 4 * 1)), 512, 720);
+  });
+  const face = new THREE.Mesh(new THREE.CircleGeometry(1.25, 64), new THREE.MeshBasicMaterial({ map: faceT, toneMapped: false })); face.position.z = .16; sw.add(face);
+  const hand = box(.06, 1.0, .03, new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x444444 }), .02); hand.geometry.translate(0, .45, 0); hand.position.z = .2; sw.add(hand);
+  const knob = box(.3, .25, .25, new THREE.MeshStandardMaterial({ color: 0x9aa4b4, metalness: 1, roughness: .2 }), .05); knob.position.y = 1.5; sw.add(knob);
+  
+  return { sw, hand, faceT };
+});
+
+// ---- grey room (ordinary reseller)
+set('grey', (g) => {
+  g.add(new THREE.HemisphereLight(0x606a78, 0x0a0a0a, .35));
+  const mon = new THREE.RectAreaLight ? null : null;
+  const room = new THREE.Group(); g.add(room);
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), M.floor); fl.rotation.x = -Math.PI / 2; fl.receiveShadow = true; room.add(fl);
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(20, 8), M.wall); back.position.set(0, 4, -2.5); room.add(back);
+  const desk = box(2.6, .08, 1.0, M.wood, .02); desk.position.set(0, 1.0, -1.4); room.add(desk);
+  for (const x of [-1.2, 1.2]) { const leg = box(.06, 1.0, .06, M.dark); leg.position.set(x, .5, -1.4); room.add(leg); }
+  const feedT = canvasTex(800, 480, (c, w, h, off = 0) => { c.fillStyle = '#0d1824'; c.fillRect(0, 0, w, h); for (let i = -1; i < 7; i++) { const y = i * 90 - (off % 90); c.fillStyle = '#1b2c40'; c.fillRect(20, y + 10, w - 40, 72); c.fillStyle = '#2b4058'; c.fillRect(32, y + 20, 52, 52); c.fillRect(100, y + 26, 300, 14); c.fillRect(100, y + 52, 180, 14); } });
+  const monitor = box(1.6, 1.0, .06, M.dark, .03); monitor.position.set(0, 1.75, -1.75); room.add(monitor);
+  const scr = plane(1.5, .9, feedT); scr.position.set(0, 1.75, -1.715); room.add(scr);
+  const ml = new THREE.PointLight(0x6aa0d8, 4, 4); ml.position.set(0, 1.7, -1.2); room.add(ml);
+  // figure from behind
+  const fig = new THREE.Group(); room.add(fig);
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(.42, .7, 8, 16), new THREE.MeshStandardMaterial({ color: 0x15181e, roughness: 1 })); torso.position.set(0, 1.35, -.3); fig.add(torso);
+  const headM = new THREE.Mesh(new THREE.SphereGeometry(.27, 24, 16), torso.material); headM.position.set(0, 2.1, -.35); fig.add(headM);
+  const chair = box(.9, .9, .1, M.dark, .05); chair.position.set(0, 1.1, .05); room.add(chair);
+  // wall clock
+  const wc = new THREE.Group(); wc.position.set(1.9, 2.9, -2.45); room.add(wc);
+  const wcf = new THREE.Mesh(new THREE.CircleGeometry(.45, 48), new THREE.MeshStandardMaterial({ color: 0xd8dade, roughness: .8 })); wc.add(wcf);
+  const wcr = new THREE.Mesh(new THREE.TorusGeometry(.45, .04, 12, 48), M.dark); wc.add(wcr);
+  const hh = box(.04, .25, .02, M.dark, .01); hh.geometry.translate(0, .11, 0); hh.position.z = .02; wc.add(hh);
+  const mh = box(.03, .36, .02, new THREE.MeshStandardMaterial({ color: 0xaa2222 }), .01); mh.geometry.translate(0, .16, 0); mh.position.z = .03; wc.add(mh);
+  const lab = plane(2.2, .55, textTex([{ t: '+3 часа', size: 160, col: CSS.red }], { w: 900, h: 230 })); lab.position.set(1.9, 2.15, -2.4); room.add(lab);
+  return { feedT, hh, mh, lab };
+});
+
+// ---- sold stamp
+set('sold', (g) => {
+  lightRig(g, { hemi: .5, keyI: 1.5, shadow: true, keyPos: [-2, 6, 3] });
+  const tbl = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshStandardMaterial({ color: 0x14171d, roughness: .8 })); tbl.rotation.x = -Math.PI / 2; tbl.receiveShadow = true; g.add(tbl);
+  const cardM = box(3.0, .06, 1.05, M.card, .03); cardM.position.y = .03; g.add(cardM);
+  const ct = plane(2.9, 1.0, canvasTex(1024, 360, listingDraw(HERO, false))); ct.rotation.x = -Math.PI / 2; ct.position.y = .065; g.add(ct);
+  const stampT = canvasTex(1024, 330, (c, w, h) => { c.strokeStyle = CSS.red; c.lineWidth = 22; rr(c, 14, 14, w - 28, h - 28, 30); c.stroke(); c.fillStyle = CSS.red; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = font(190, 700); c.fillText('УЖЕ ПРОДАНО', w / 2, h / 2 + 6); });
+  const stamp = plane(2.7, .87, stampT); stamp.rotation.x = -Math.PI / 2; g.add(stamp);
+  return { stamp };
+});
+
+// ---- phone close-up set (notification / call / check / chat / listing)
+set('phone', (g) => {
+  g.add(new THREE.HemisphereLight(0x4a6a8a, 0x05070a, .5));
+  const key = new THREE.SpotLight(0xffffff, 80, 20, .6, .7); key.position.set(2, 3, 5); g.add(key);
+  const rim = new THREE.SpotLight(C.yel, 120, 20, .5, .7); rim.position.set(-3, 2, -3); g.add(rim);
+  const scr = phoneScreen((c, w, h, mode = 'notif', k = 0) => PHONE_UI[mode](c, w, h, k));
+  const ph = makePhone(scr, 1.0); g.add(ph);
+  const glow = glowSprite(C.yel, 5, .35); glow.position.z = -.6; g.add(glow);
+  const rings = [];
+  for (let i = 0; i < 3; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(1, .015, 8, 80), new THREE.MeshBasicMaterial({ color: C.grn, transparent: true, toneMapped: false })); g.add(r); rings.push(r); }
+  const bubbles = [];
+  for (const [txt, me] of [['Отдадите за 52?', true], ['Давайте за 52', false]]) {
+    const t = canvasTex(900, 220, (c, w, h) => { rr(c, 6, 6, w - 12, h - 12, 90); c.fillStyle = me ? CSS.yel : '#2a3546'; c.fill(); c.fillStyle = me ? '#1a1608' : CSS.paper; c.font = font(100, 600); c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(txt, w / 2, h / 2 + 4); });
+    const b = new THREE.Mesh(new RoundedBoxGeometry(1.6, .39, .08, 3, .16), [M.card, M.card, M.card, M.card, new THREE.MeshBasicMaterial({ map: t, toneMapped: false }), M.card]);
+    b.userData.me = me; g.add(b); bubbles.push(b);
+  }
+  return { ph, scr, glow, rings, bubbles };
+});
+const PHONE_UI = {
+  notif(c, w, h, k) { notifDraw(c, w, h, 1, '07:01'); if (k > 0) { c.strokeStyle = `rgba(255,255,255,${1 - k})`; c.lineWidth = 10; c.beginPath(); c.arc(w / 2 + 120, 760, 40 + 120 * k, 0, 7); c.stroke(); } },
+  listing(c, w, h, k) {
+    rr(c, 30, 120, w - 60, 560, 40); c.fillStyle = CSS.panel2; c.fill(); ICONS.phone(c, w / 2, 400, 360, '#c0c8d6');
+    c.textAlign = 'left'; c.fillStyle = CSS.paper; c.font = font(58, 600); c.fillText('iPhone 15 Pro, 256 ГБ', 50, 770);
+    c.fillStyle = CSS.yel; c.font = font(130, 700); c.fillText('55 000 ₽', 50, 920);
+    c.fillStyle = CSS.grey; c.font = font(36, 500, 'Mono'); c.fillText('Казань · 4 минуты назад', 50, 990);
+    rr(c, 50, 1240, w - 100, 140, 36); c.fillStyle = '#1f8a52'; c.fill(); c.fillStyle = CSS.paper; c.textAlign = 'center'; c.font = font(64, 700); c.fillText('Позвонить', w / 2, 1335);
+    if (k > 0) { c.strokeStyle = `rgba(255,255,255,${1 - k})`; c.lineWidth = 12; c.beginPath(); c.arc(w / 2, 1310, 40 + 160 * k, 0, 7); c.stroke(); }
+  },
+  call(c, w, h, k) {
+    c.fillStyle = '#0c1a16'; c.fillRect(0, 0, w, h); c.fillStyle = '#284a40'; c.beginPath(); c.arc(w / 2, 420, 150, 0, 7); c.fill();
+    c.fillStyle = CSS.paper; c.textAlign = 'center'; c.font = font(150, 600); c.fillText('П', w / 2, 475); c.font = font(84, 600); c.fillText('Продавец', w / 2, 690);
+    c.font = font(44, 500, 'Mono'); c.fillStyle = CSS.grey; c.fillText('00:0' + Math.floor(3 + k * 5), w / 2, 770);
+    for (let i = 0; i < 16; i++) { const hh = 30 + 110 * Math.abs(Math.sin(k * 25 + i * .7)); c.fillStyle = CSS.grn; rr(c, w / 2 - 330 + i * 42, 980 - hh / 2, 20, hh, 10); c.fill(); }
+    c.fillStyle = CSS.red; c.beginPath(); c.arc(w / 2, 1280, 90, 0, 7); c.fill();
+  },
+  check(c, w, h, k) {
+    c.fillStyle = '#eef0f4'; c.fillRect(0, 0, w, h); c.fillStyle = '#14181f'; c.textAlign = 'left'; c.font = font(66, 700); c.fillText('Проверка', 50, 200);
+    const rows = [['Серийный номер', 'F2LXK8Q1MN', .15], ['Аккумулятор', Math.round(L(0, 91, E.out(pr(k, .3, .4)))) + '%', .35], ['Face ID', 'работает', .6], ['Блокировки', 'нет', .8]];
+    rows.forEach(([a, b, at], i) => {
+      const y = 330 + i * 190; c.fillStyle = '#7a808c'; c.font = font(44, 500); c.fillText(a, 50, y);
+      c.fillStyle = '#14181f'; c.font = font(60, 700); c.fillText(b, 50, y + 72);
+      if (k > at) { c.fillStyle = '#1f9a5a'; c.beginPath(); c.arc(w - 100, y + 30, 44, 0, 7); c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 12; c.beginPath(); c.moveTo(w - 122, y + 30); c.lineTo(w - 104, y + 50); c.lineTo(w - 76, y + 12); c.stroke(); }
+      c.fillStyle = '#d8dce4'; c.fillRect(50, y + 110, w - 100, 3);
+    });
+    const sy = 280 + (k * 1.4 % 1) * 900; const gr = c.createLinearGradient(0, sy - 60, 0, sy); gr.addColorStop(0, 'rgba(57,217,138,0)'); gr.addColorStop(1, 'rgba(57,217,138,.5)'); c.fillStyle = gr; c.fillRect(0, sy - 60, w, 60);
+  },
+  chat(c, w, h, k) { c.fillStyle = '#0c1118'; c.fillRect(0, 0, w, h); c.fillStyle = CSS.grey; c.textAlign = 'center'; c.font = font(44, 500); c.fillText('Продавец · Казань', w / 2, 170); },
+  sold77(c, w, h, k) {
+    c.fillStyle = '#0c1118'; c.fillRect(0, 0, w, h);
+    rr(c, 30, 120, w - 60, 520, 40); c.fillStyle = CSS.panel2; c.fill(); ICONS.phone(c, w / 2, 380, 330, '#c0c8d6');
+    c.textAlign = 'left'; c.fillStyle = CSS.paper; c.font = font(58, 600); c.fillText('iPhone 15 Pro, 256 ГБ', 50, 730);
+    c.font = font(140, 700); c.fillText('77 000 ₽', 50, 890);
+    c.fillStyle = CSS.grey; c.font = font(36, 500, 'Mono'); c.fillText('Просмотров: ' + Math.round(148 * Math.min(1, k * 2)), 50, 960);
+    if (k > .35) { const a = E.back(pr(k, .35, .25)); rr(c, 40, 1030, (w - 80) * a, 200, 60); c.fillStyle = '#25303e'; c.fill(); if (a > .9) { c.fillStyle = CSS.paper; c.font = font(64, 500); c.fillText('Добрый вечер! Беру 🤝', 80, 1150); } }
+    if (k > .6) { rr(c, 50, 1290, w - 100, 120, 36); c.fillStyle = '#1f8a52'; c.fill(); c.fillStyle = CSS.paper; c.textAlign = 'center'; c.font = font(60, 700); c.fillText('Продано ✓', w / 2, 1372); }
+  },
+};
+
+// ---- car on road
+set('road', (g) => {
+  g.add(new THREE.HemisphereLight(0x8090c0, 0x101010, .6));
+  const sun = new THREE.DirectionalLight(0xff9a6a, 2.2); sun.position.set(-2, 2, -10); g.add(sun);
+  const skyT = canvasTex(64, 512, (c, w, h) => { const gr = c.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#0e1630'); gr.addColorStop(.6, '#4a3a5a'); gr.addColorStop(1, '#ffa070'); c.fillStyle = gr; c.fillRect(0, 0, w, h); });
+  const sky = plane(300, 120, skyT); sky.position.set(0, 30, -120); g.add(sky);
+  const sunS = glowSprite(0xffb070, 30, .9); sunS.position.set(-8, 4, -110); g.add(sunS);
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(10, 400), new THREE.MeshStandardMaterial({ color: 0x1c1e24, roughness: .6, metalness: .2 })); road.rotation.x = -Math.PI / 2; road.position.z = -150; g.add(road);
+  const gnd = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0x0b0e14 })); gnd.rotation.x = -Math.PI / 2; gnd.position.set(0, -.01, -150); g.add(gnd);
+  const dashes = [], lamps = [];
+  for (let i = 0; i < 60; i++) { const d = new THREE.Mesh(new THREE.PlaneGeometry(.15, 1.6), new THREE.MeshBasicMaterial({ color: 0xe8e0c0 })); d.rotation.x = -Math.PI / 2; d.position.set(0, .01, -i * 5); g.add(d); dashes.push(d); }
+  for (let i = 0; i < 24; i++) { const side = i % 2 ? 1 : -1; const lg = new THREE.Group(); const pole = box(.12, 5, .12, M.dark, .02); pole.position.y = 2.5; lg.add(pole); const bulb = glowSprite(0xffc080, 2.2, .9); bulb.position.set(-side * .6, 5, 0); lg.add(bulb); lg.position.set(side * 6, 0, -i * 14); g.add(lg); lamps.push(lg); }
+  const car = new THREE.Group(); g.add(car);
+  const paint = new THREE.MeshStandardMaterial({ color: 0x1b1f28, metalness: .7, roughness: .3 });
+  const b1 = box(1.9, .55, 4.2, paint, .2); b1.position.y = .55; car.add(b1);
+  const b2 = box(1.6, .5, 2.2, paint, .22); b2.position.set(0, 1.05, -.2); car.add(b2);
+  const glass = box(1.62, .38, 2.0, M.glassBlack, .18); glass.position.set(0, 1.07, -.2); car.add(glass);
+  for (const [x, z] of [[-.9, 1.3], [.9, 1.3], [-.9, -1.4], [.9, -1.4]]) { const wh = new THREE.Mesh(new THREE.CylinderGeometry(.36, .36, .3, 24), new THREE.MeshStandardMaterial({ color: 0x08080a, roughness: .8 })); wh.rotation.z = Math.PI / 2; wh.position.set(x, .36, z); car.add(wh); }
+  for (const x of [-.7, .7]) { const tl = box(.4, .1, .05, new THREE.MeshBasicMaterial({ color: 0xff2020, toneMapped: false }), .02); tl.position.set(x, .7, 2.11); car.add(tl); const s = glowSprite(0xff2020, 1.2, .8); s.position.set(x, .7, 2.3); car.add(s); }
+  g.fog = new THREE.Fog(0x2a2436, 20, 140);
+  return { car, dashes, lamps };
+});
+
+// ---- money
+set('money', (g) => {
+  lightRig(g, { hemi: .6, keyI: 1.8, shadow: true, keyPos: [-3, 7, 4] });
+  const tbl = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.MeshStandardMaterial({ color: 0x16120e, roughness: .7 })); tbl.rotation.x = -Math.PI / 2; tbl.receiveShadow = true; g.add(tbl);
+  const billT = canvasTex(512, 240, (c, w, h) => { const gr = c.createLinearGradient(0, 0, w, h); gr.addColorStop(0, '#c86a50'); gr.addColorStop(1, '#a8503c'); c.fillStyle = gr; c.fillRect(0, 0, w, h); c.strokeStyle = '#f0c0a0'; c.lineWidth = 6; c.strokeRect(10, 10, w - 20, h - 20); c.beginPath(); c.arc(380, 120, 70, 0, 7); c.stroke(); c.fillStyle = '#f8dcc8'; c.font = font(80, 700); c.fillText('5000', 30, 100); });
+  const billMat = new THREE.MeshStandardMaterial({ map: billT, roughness: .7, side: THREE.DoubleSide });
+  const edge = new THREE.MeshStandardMaterial({ color: 0xd8b8a0, roughness: .9 });
+  const stacks = [];
+  for (let i = 0; i < 5; i++) { const s = new THREE.Mesh(new THREE.BoxGeometry(1.6, .22, .75), [edge, edge, billMat, edge, edge, edge]); s.castShadow = true; s.receiveShadow = true; g.add(s); stacks.push(s); }
+  const rain = []; const r = rng(3);
+  for (let i = 0; i < 70; i++) { const m = new THREE.Mesh(new THREE.PlaneGeometry(.8, .38), billMat); m.userData = { x: (r() - .5) * 7, z: (r() - .5) * 5 - 1, y0: 4 + r() * 9, sp: 2.2 + r() * 1.5, rx: r() * 6, ry: r() * 6, sw: r() * 6 }; m.castShadow = true; g.add(m); rain.push(m); }
+  const l52 = plane(3.2, .9, textTex([{ t: '52 000 ₽', size: 190 }, { t: 'отдал продавцу', size: 60, w: 400, col: CSS.grey }], { w: 1024, h: 300 }));
+  const l25 = plane(3.4, 1.05, textTex([{ t: '+25 000 ₽', size: 230, col: CSS.grn }, { t: 'купил за 52 · продал за 77', size: 62, w: 400, col: CSS.paper }], { w: 1200, h: 380, shadow: 'rgba(57,217,138,.6)' }));
+  g.add(l52, l25);
+  const gl = new THREE.PointLight(C.grn, 0, 10); gl.position.set(0, 2, 2); g.add(gl);
+  return { stacks, rain, l52, l25, gl };
+});
+
+// ---- calendar
+set('calendar', (g) => {
+  lightRig(g, { hemi: .6, keyI: 1.6, keyPos: [-2, 4, 6] });
+  const cal = new THREE.Group(); g.add(cal);
+  const pageT = canvasTex(800, 900, (c, w, h) => { c.fillStyle = '#eceae2'; c.fillRect(0, 0, w, h); c.fillStyle = '#d6403a'; c.fillRect(0, 0, w, 230); c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = font(120, 700); c.fillText('СЕГОДНЯ', w / 2, 160); c.fillStyle = '#1c1c20'; c.font = font(480, 700); c.fillText('1', w / 2, 700); c.fillStyle = '#6a6a70'; c.font = font(100, 500); c.fillText('день', w / 2, 840); });
+  const b = new THREE.Mesh(new THREE.BoxGeometry(2, 2.25, .2), [M.dark, M.dark, M.dark, M.dark, new THREE.MeshStandardMaterial({ map: pageT, roughness: .9 }), M.dark]); cal.add(b);
+  for (let i = 0; i < 4; i++) { const ring = new THREE.Mesh(new THREE.TorusGeometry(.09, .025, 8, 20), new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 1, roughness: .3 })); ring.position.set(-.7 + i * .47, 1.13, 0); cal.add(ring); }
+  return { cal };
+});
+
+// ---- reveal / brand
+set('brand', (g) => {
+  const rays = [];
+  for (let i = 0; i < 16; i++) { const m = new THREE.Mesh(new THREE.PlaneGeometry(.5, 30), new THREE.MeshBasicMaterial({ color: 0xffb01f, transparent: true, opacity: .09, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })); m.geometry.translate(0, 15, 0); m.rotation.z = i / 16 * Math.PI * 2; m.position.z = -3; g.add(m); rays.push(m); }
+  const bg = glowSprite(0xff8a1a, 14, .55); bg.position.z = -4; g.add(bg);
+  const bg2 = glowSprite(C.yel, 6, .5); bg2.position.z = -2; g.add(bg2);
+  const chT = new THREE.CanvasTexture(IMG.char); chT.colorSpace = THREE.SRGBColorSpace;
+  const ch = plane(3.4, 3.4 * IMG.char.height / IMG.char.width, chT); ch.material.depthWrite = false; g.add(ch);
+  const logoT = canvasTex(1400, 420, (c, w, h) => {
+    c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = '200px Russo';
+    c.strokeStyle = CSS.yel; c.lineWidth = 26; c.lineCap = 'round'; c.beginPath(); c.moveTo(220, 330); c.quadraticCurveTo(700, 290, 1200, 270); c.stroke();
+    c.fillStyle = '#000'; c.fillText('ПЕРЕКУПЫ', w / 2 + 8, 200 + 10); c.fillStyle = CSS.paper; c.fillText('ПЕРЕКУПЫ', w / 2, 200);
+    c.strokeStyle = CSS.yel; c.lineWidth = 10; c.lineJoin = 'round'; const x = 1240, y = 70, s = 40; c.beginPath(); c.moveTo(x - s, y + s * .6); c.lineTo(x - s, y - s * .4); c.lineTo(x - s * .4, y + s * .1); c.lineTo(x, y - s * .6); c.lineTo(x + s * .4, y + s * .1); c.lineTo(x + s, y - s * .4); c.lineTo(x + s, y + s * .6); c.closePath(); c.stroke();
+  });
+  const logo = plane(2.9, .87, logoT); logo.position.set(0, -1.85, .5); g.add(logo);
+  const sub = plane(2.6, .4, textTex([{ t: 'мой новый проект', size: 90, w: 500, col: CSS.paper }], { w: 1100, h: 170 })); sub.position.set(0, -2.5, .5); g.add(sub);
+  const btnT = canvasTex(1100, 240, (c, w, h) => { rr(c, 6, 6, w - 12, h - 12, 116); c.fillStyle = CSS.yel; c.fill(); c.fillStyle = '#1a1406'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = font(110, 700); c.fillText('ССЫЛКА В ПРОФИЛЕ', w / 2, h / 2 + 6); });
+  const btn = plane(3.2, .7, btnT); btn.position.set(0, -3.05, .6); g.add(btn);
+  const price = plane(3, .4, textTex([{ t: 'первый месяц — 2 000 ₽', size: 80, w: 500, col: CSS.paper }], { w: 1100, h: 150 })); price.position.set(0, -3.7, .6); g.add(price);
+  const parts = []; const r = rng(9);
+  for (let i = 0; i < 60; i++) { const s = glowSprite(C.yel, .08 + r() * .12, .8); s.userData = { x: (r() - .5) * 8, y: (r() - .5) * 12, z: -2 + r() * 4, sp: .2 + r() * .5 }; g.add(s); parts.push(s); }
+  return { rays, ch, logo, sub, btn, price, parts, bg };
+});
+
+// ---- AI orbit (smiley + cards + map below)
+set('orbit', (g) => {
+  g.add(new THREE.HemisphereLight(0x557799, 0x05070a, .6));
+  const fT = new THREE.CanvasTexture(IMG.face); fT.colorSpace = THREE.SRGBColorSpace;
+  const face = plane(2.4, 2.4, fT); g.add(face);
+  const fg = glowSprite(C.yel, 7, .5); fg.position.z = -.5; g.add(fg);
+  const texs = ITEMS.map(it => canvasTex(1024, 360, listingDraw(it)));
+  const hl = canvasTex(1024, 360, listingDraw(HERO, true));
+  const cards = [];
+  for (let i = 0; i < 10; i++) { const m = plane(1.5, .53, i === 3 ? hl : texs[i % texs.length]); m.userData.i = i; g.add(m); cards.push(m); }
+  const rings = [];
+  for (let i = 0; i < 3; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(2.2 + i * .5, .008, 6, 120), new THREE.MeshBasicMaterial({ color: C.yel, transparent: true, opacity: .35 - i * .08, toneMapped: false })); r.rotation.x = Math.PI / 2 - .25; g.add(r); rings.push(r); }
+  const cityL = plane(3.6, .5, textTex([{ t: 'Москва · Казань · Самара · Уфа', size: 70, w: 500, col: CSS.grey }], { w: 1400, h: 150 })); cityL.visible = false; g.add(cityL);
+  return { face, cards, rings };
+});
+
+// ---- course stairs
+set('course', (g) => {
+  lightRig(g, { hemi: .55, keyI: 1.5, shadow: true, keyPos: [-4, 9, 5] });
+  const mods = ['Где искать товар', 'Как проверить', 'Как торговаться', 'Как продать дороже', 'Как не нарваться', 'Как выйти на поток'];
+  const steps = mods.map((t, i) => {
+    const tex = canvasTex(1024, 200, (c, w, h) => { c.fillStyle = '#1b2738'; c.fillRect(0, 0, w, h); c.fillStyle = CSS.yel; c.font = font(84, 800, 'Mono'); c.textBaseline = 'middle'; c.fillText(String(i + 1).padStart(2, '0'), 40, h / 2); c.fillStyle = CSS.paper; c.font = font(92, 600); c.fillText(t, 190, h / 2 + 4); });
+    const m = new THREE.Mesh(new RoundedBoxGeometry(3.4, .4, 1.2, 3, .06), [M.card, M.card, M.card, M.card, new THREE.MeshStandardMaterial({ map: tex, roughness: .6 }), M.card]);
+    m.castShadow = m.receiveShadow = true; g.add(m); return m;
+  });
+  const title = plane(3.4, .9, textTex([{ t: 'Обучение', size: 130, col: CSS.yel }, { t: 'перекуп с нуля · от А до Я', size: 64, w: 500 }], { w: 1100, h: 300 })); g.add(title);
+  return { steps, title };
+});
+
+// ---- subscription slab
+set('price', (g) => {
+  lightRig(g, { hemi: .5, keyI: 1.4, keyPos: [-2, 4, 6] });
+  const glow = glowSprite(C.yel, 9, .35); glow.position.z = -1.5; g.add(glow);
+  const t = canvasTex(900, 1100, (c, w, h) => {
+    c.fillStyle = '#121b28'; c.fillRect(0, 0, w, h); c.strokeStyle = CSS.yel; c.lineWidth = 12; rr(c, 10, 10, w - 20, h - 20, 50); c.stroke();
+    c.fillStyle = CSS.yel; c.font = font(64, 600); c.fillText('Подписка «Перекупы»', 70, 140);
+    ['Нейросеть ищет сделки', 'Уведомления на телефон', 'Обучение от А до Я'].forEach((s, i) => { c.fillStyle = CSS.grn; c.beginPath(); c.arc(95, 245 + i * 95, 26, 0, 7); c.fill(); c.fillStyle = CSS.paper; c.font = font(54, 500); c.fillText(s, 145, 265 + i * 95); });
+    c.textAlign = 'center'; c.fillStyle = CSS.yel; c.font = font(250, 700); c.shadowColor = 'rgba(255,210,31,.5)'; c.shadowBlur = 40; c.fillText('2 000 ₽', w / 2, 800); c.shadowBlur = 0;
+    c.fillStyle = CSS.paper; c.font = font(72, 600); c.fillText('первый месяц', w / 2, 900); c.fillStyle = CSS.grey; c.font = font(50, 500); c.fillText('дальше 4 000 ₽ в месяц', w / 2, 990);
+  });
+  const slab = new THREE.Mesh(new RoundedBoxGeometry(2.6, 3.18, .12, 3, .1), [M.card, M.card, M.card, M.card, new THREE.MeshBasicMaterial({ map: t, toneMapped: false }), M.card]); g.add(slab);
+  return { slab };
+});
+
+// ================================================================ TIMELINE
+// [start, set, update(lt, dur, S), opts]
+const V = new THREE.Vector3();
+function look(x, y, z, tx, ty, tz, fov = 35, roll = 0) { cam.position.set(x, y, z); cam.up.set(Math.sin(roll), Math.cos(roll), 0); cam.lookAt(tx, ty, tz); cam.fov = fov; cam.updateProjectionMatrix(); }
+const shake = (t, amp, t0) => { const k = Math.max(0, 1 - (t - t0) / .35); return t >= t0 ? Math.sin(t * 90) * amp * k * k : 0; };
+
+const SHOTS = [
+  [0.00, 'building', (t, d, S) => { const k = E.inout(t / d); look(L(1.5, .2, k), L(-1, 4.1, k), L(22, 6, k), 0, L(3, 4.2, k), -1, 38, L(.05, 0, k)); S.glow.material.opacity = .5 + .2 * Math.sin(t * 6); }, { label: 'НОЧЬ · ДОМ', clock: [6, 59, 54] }],
+  [1.02, 'bedroom', (t, d, S) => { const k = E.out(t / d); redraw(S.clockTex, t > .12 ? '07:00' : '06:59'); look(L(3.3, 2.95, k), 1.0, L(-.55, -.7, k), 1.95, .82, -1.38, 30); }, { label: 'УТРО · СПАЛЬНЯ', clock: [6, 59, 59] }],
+  [1.96, 'bedroom', (t, d, S) => { const k = E.inout(t / d); redraw(S.clockTex, '07:00'); look(L(-.6, 1.2, k), L(3.4, 2.6, k), L(4.2, 2.6, k), L(-.2, 1.2, k), .8, L(-.4, -1.0, k), 40); }, { label: 'УТРО · СПАЛЬНЯ', clock: [7, 0, 0] }],
+  [3.24, 'bedroom', (t, d, S) => {
+    const on = pr(t, .85, .2); redraw(S.scr, E.out(pr(t, .9, .5)));
+    const j = t > .9 ? Math.sin(t * 120) * .006 : 0; S.phone.position.set(1.55 + j, .74, -1.2 + j * .5);
+    S.pl.intensity = on * (2.2 + Math.sin(t * 30) * .6);
+    const k = E.inout(pr(t, 0, d)); const dive = E.in(pr(t, d - .45, .45));
+    look(L(2.3, 1.55, k) + j, L(1.7, 1.02, k) - dive * .2, L(-.1, -1.05, k) + 0, 1.55, .74, -1.2, L(34, 30, k) - dive * 22);
+  }, { label: 'УТРО · СПАЛЬНЯ', clock: [7, 0, 1], flashEnd: true }],
+  [5.26, 'tunnel', (t, d, S) => {
+    const sp = 14 + 10 * E.inout(t / d);
+    S.cards.forEach((m, i) => { const u = m.userData; let z = ((u.z0 + t * sp) % 60 + 60) % 60 - 60; m.position.set(Math.cos(u.a) * u.rad, Math.sin(u.a) * u.rad * 1.4, z); m.rotation.set(0, 0, u.spin + t * u.spin); m.lookAt(0, 0, 10); m.rotation.z += u.spin; });
+    S.face.position.z = -28 + t * 1.5; S.fg.position.z = S.face.position.z - 1;
+    redraw(S.countTex, Math.round(L(0, 1284391, E.out(pr(t, .2, d - .3)))));
+    look(Math.sin(t * .8) * .3, Math.cos(t * .6) * .2, 6, 0, 0, -20, 50, t * .08);
+    S.count.position.set(0, 2.5 + .1 * Math.sin(t), -3);
+  }, { label: 'НОЧЬ · НЕЙРОСЕТЬ', clock: [2, 13, 40], mb: 3 }],
+  [8.74, 'map', (t, d, S) => {
+    S.pillars.forEach(p => { const u = p.userData; const k = E.back(pr(t, .05 + (u.lon - 30) / 105 * .8, .3)); p.visible = k > 0; u.p.scale.y = Math.max(.01, k * 2.2); u.p.position.y = k * 1.1; });
+    S.heroCard.visible = false; S.spot.intensity = 0;
+    const k = E.inout(t / d); look(L(-7, 5, k), L(9, 10, k), L(12, 13, k), L(-5, 3, k), 0, L(-.5, -1, k), 45);
+  }, { label: 'ПОИСК · ВСЯ РОССИЯ', clock: [4, 37, 12] }],
+  [10.64, 'map', (t, d, S) => {
+    S.pillars.forEach(p => { const u = p.userData; const hero = p === S.kazan; const k = hero ? 2.2 + 6 * E.out(pr(t, .45, .7)) : 2.2 * (1 - E.inout(pr(t, 0, .4))); u.p.scale.y = Math.max(.01, k); u.p.position.y = k / 2; p.visible = k > .02; u.p.material.opacity = hero ? .95 : .85; });
+    S.spot.intensity = 400 * pr(t, .4, .3);
+    const kz = S.kazan.position; const k = E.inout(pr(t, .35, d - .35));
+    S.heroCard.visible = t > .7; S.heroCard.position.set(kz.x, L(2, 6.6, E.out(pr(t, .7, .8))), kz.z); S.heroCard.lookAt(cam.position);
+    look(kz.x + L(4, 1.5, k), L(5, 7.2, k), kz.z + L(8, 4.5, k), kz.x, L(1, 6.3, k), kz.z, 40);
+  }, { label: '06:58 · НАЙДЕНО', clock: [6, 58, 31] }],
+  [12.10, 'iphone', (t, d, S) => { const k = E.out(t / d); S.ph.rotation.set(.1, L(Math.PI - 1.3, Math.PI - .2, k), 0); S.ph.position.y = .1 * Math.sin(t * 2); look(L(1.2, .5, k), .3, L(6.2, 5.4, k), 0, -.15, 0, 38); }, { label: '06:58 · НАЙДЕНО', clock: [6, 58, 33] }],
+  [13.82, 'columns', (t, d, S) => {
+    const kg = E.back(pr(t, .35, .55), 1.2), ky = E.back(pr(t, 2.0, .55), 1.2);
+    const hg = Math.max(.02, 3.2 * kg), hy = Math.max(.02, 2.2 * ky);
+    S.grey.scale.y = hg; S.grey.position.y = hg / 2; S.yel.scale.y = hy; S.yel.position.y = hy / 2; S.yel.visible = ky > 0;
+    S.lg.position.set(-.8, hg + .6, .7); S.ly.position.set(.8, hy + .6, .7); S.ly.visible = ky > .05; S.lg.lookAt(cam.position); S.ly.lookAt(cam.position);
+    S.pct.visible = t > 2.6; S.pct.position.set(.6, 4.9, .6); S.pct.scale.setScalar(E.back(pr(t, 2.6, .3))); S.pct.lookAt(cam.position);
+    S.yl.intensity = 6 * ky; S.yl.position.set(.8, hy + .5, 1.2);
+    const k = E.inout(t / d); look(L(-3.8, 1.6, k), L(1.6, 3.2, k), L(8.5, 12.0, k), L(-.8, 0, k), L(1.8, 2.7, k), 0, 38);
+  }, { label: 'АНАЛИЗ ЦЕНЫ', clock: [6, 58, 36] }],
+  [17.64, 'watch', (t, d, S) => { const a = E.out5(pr(t, .55, .5)); S.hand.rotation.z = -a * Math.PI * 2 * (4 / 60) * 15; redraw(S.faceT, a * 15 * 4 / 1); const k = E.inout(t / d); S.sw.rotation.set(L(-.35, -.1, k), L(.5, -.15, k), 0); look(0, L(.3, 0, k), L(9.5, 8.2, k), 0, 0, 0, 36); }, { label: 'ОБЪЯВЛЕНИЕ', clock: [6, 59, 2] }],
+  [19.74, 'grey', (t, d, S) => { redraw(S.feedT, t * 260); const sp = E.in(pr(t, .9, 1.8)); S.mh.rotation.z = -(t * .3 + sp * 30); S.hh.rotation.z = -(t * .03 + sp * 2.6); S.lab.visible = t > 1.6; S.lab.scale.setScalar(E.back(pr(t, 1.6, .3))); const k = E.inout(t / d); look(L(1.4, .8, k), L(2.7, 2.5, k), L(5.2, 4.2, k), L(.6, .9, k), 2.1, -1.8, 44); }, { label: 'ОБЫЧНЫЙ ПЕРЕКУП', clock: [7, 0, 2], grade: 'grey' }],
+  [22.50, 'sold', (t, d, S) => { const k = pr(t, .7, .14); S.stamp.position.y = L(3.5, .08, E.in(k)); S.stamp.rotation.z = L(.4, -.12, k); S.stamp.visible = t > .3; const sh = shake(t, .06, .84); look(L(.8, .2, E.out(t / d)) + sh, 5.6 + sh, L(2.4, 2.0, E.out(t / d)), 0, 0, 0, 40); }, { label: 'ОБЫЧНЫЙ ПЕРЕКУП', clock: [9, 47, 15], grade: 'grey', fadeOut: .35 }],
+  [24.04, 'phone', (t, d, S) => { const mode = t < 1.18 ? 'notif' : 'listing'; redraw(S.scr, mode, mode === 'notif' ? pr(t, .25, .5) : pr(t, 1.5, .5)); S.rings.forEach(r => r.visible = false); S.bubbles.forEach(b => b.visible = false); const k = E.out(pr(t, 0, .6)); S.ph.rotation.set(L(-.4, -.08, k), L(.5, .12, k), L(.2, 0, k)); look(0, L(-.4, .1, k), L(5.6, 3.1, E.out(t / d)), 0, 0, 0, 36, .03); }, { label: '07:01 · ТЫ', clock: [7, 1, 3], mb: 2 }],
+  [26.06, 'phone', (t, d, S) => { redraw(S.scr, 'call', t / d); S.bubbles.forEach(b => b.visible = false); S.rings.forEach((r, i) => { r.visible = true; const p = (t * 1.4 + i / 3) % 1; r.scale.setScalar(1 + p * 1.6); r.material.opacity = 1 - p; }); S.ph.rotation.set(-.05, -.35 + t * .2, .05); look(.6, .2, 4.0 - t * .6, 0, 0, 0, 36); }, { label: '07:02 · ЗВОНОК', clock: [7, 2, 10] }],
+  [26.88, 'road', (t, d, S) => { const z = t * 32; S.dashes.forEach((m, i) => m.position.z = ((-i * 5 + z) % 300 + 300) % 300 - 290); S.lamps.forEach((m, i) => m.position.z = ((-i * 14 + z) % 336 + 336) % 336 - 330); S.car.position.set(1.4, Math.sin(t * 30) * .01, 0); look(L(3.4, 2.4, t / d), L(2.6, 2.1, t / d), L(12.5, 10.5, t / d), 1.3, .8, -8, 40, -.03); }, { label: 'ДОРОГА · 40 МИН', clock: [7, 12, 44], mb: 3 }],
+  [27.60, 'phone', (t, d, S) => { redraw(S.scr, 'check', t / d); S.rings.forEach(r => r.visible = false); S.bubbles.forEach(b => b.visible = false); S.ph.rotation.set(-.1, .3 - t * .3, -.04); look(-.3, .2, 3.3 - t * .4, 0, 0, 0, 36); }, { label: 'ВСТРЕЧА · ПРОВЕРКА', clock: [7, 52, 18] }],
+  [28.26, 'phone', (t, d, S) => { redraw(S.scr, 'chat', 0); S.rings.forEach(r => r.visible = false); S.ph.rotation.set(0, -.25, 0); S.bubbles.forEach((b, i) => { const k = E.back(pr(t, .05 + i * .45, .3)); b.visible = k > 0; b.scale.setScalar(Math.max(.01, k)); b.position.set(b.userData.me ? .25 : -.25, .5 - i * .62, .6 + i * .15); b.rotation.y = b.userData.me ? -.15 : .15; }); look(L(.6, .2, t / d), 0, 7.6, 0, -.1, 0, 36); }, { label: 'ВСТРЕЧА · ТОРГ', clock: [7, 55, 2] }],
+  [29.36, 'money', (t, d, S) => { S.rain.forEach(m => m.visible = false); S.l25.visible = false; S.gl.intensity = 0; S.stacks.forEach((s, i) => { const k = E.out5(pr(t, .05 + i * .14, .3)); s.visible = k > 0; s.position.set((i % 2 ? .1 : -.08) + i * .02, L(4, .11 + i * .225, k), 0); s.rotation.y = .15 * Math.sin(i * 2); }); S.l52.visible = t > .9; S.l52.position.set(0, 2.05, 0); S.l52.lookAt(cam.position); look(L(2.8, 2.0, t / d), L(1.8, 2.4, t / d), 5.4, 0, 1.15, 0, 40); }, { label: 'СДЕЛКА', clock: [7, 58, 40] }],
+  [31.42, 'phone', (t, d, S) => { redraw(S.scr, 'sold77', t / d); S.rings.forEach(r => r.visible = false); S.bubbles.forEach(b => b.visible = false); S.ph.rotation.set(-.06, .25 - t * .15, .03); look(.2, .1, L(4.2, 3.2, E.out(t / d)), 0, -.05, 0, 36); }, { label: 'ВЕЧЕР · ПРОДАЖА', clock: [19, 42, 5], tint: 'evening' }],
+  [33.72, 'money', (t, d, S) => { S.stacks.forEach((s, i) => { s.visible = true; s.position.set(i * .02, .11 + i * .225, 0); }); S.l52.visible = false; S.rain.forEach(m => { const u = m.userData; m.visible = true; const y = u.y0 - t * u.sp * 2; m.position.set(u.x + Math.sin(t * 2 + u.sw) * .3, Math.max(.02, y), u.z); m.rotation.set(y > .03 ? u.rx + t * 3 : -Math.PI / 2, u.ry + t * 2, 0); }); S.l25.visible = true; S.l25.scale.setScalar(E.back(pr(t, .1, .35))); S.l25.position.set(0, 2.7, .8); S.l25.lookAt(cam.position); S.gl.intensity = 8 * pr(t, .1, .3); look(0, L(2.4, 2.9, t / d), L(10, 8.6, E.out(t / d)), 0, 2.2, 0, 40); }, { label: 'ВЕЧЕР · ИТОГ', clock: [20, 14, 37], mb: 2 }],
+  [35.70, 'calendar', (t, d, S) => { S.cal.rotation.set(L(-.6, -.05, E.out(t / .5)), L(.6, -.1, E.out(t / .6)), 0); look(0, 0, L(6, 5, t / d), 0, 0, 0, 36); }, { label: 'ВЕЧЕР · ИТОГ', clock: [20, 15, 0], fadeOut: .25 }],
+  [36.60, null, () => { }, { label: '', black: true }],
+  [37.12, 'brand', (t, d, S) => {
+    S.rays.forEach((r, i) => { r.rotation.z = i / 16 * Math.PI * 2 + t * .12; r.material.opacity = .1 * E.out(t / .3); });
+    S.ch.scale.setScalar(E.back(pr(t, 0, .45), 1.4)); S.ch.position.set(0, .7 + .05 * Math.sin(t * 2), 0); S.ch.rotation.z = Math.sin(t * 1.6) * .03;
+    S.logo.visible = t > .25; S.logo.scale.setScalar(E.back(pr(t, .25, .35))); S.sub.visible = t > 1.45; S.sub.material.opacity = pr(t, 1.45, .3); S.btn.visible = false; S.price.visible = false;
+    S.parts.forEach(p => { const u = p.userData; p.position.set(u.x, ((u.y + t * u.sp) % 12 + 12) % 12 - 6, u.z); });
+    look(Math.sin(t * .4) * .5, L(-.2, .1, t / d), L(8.6, 7.6, E.out(t / d)), 0, -.3, 0, 40);
+  }, { label: 'НОВЫЙ ПРОЕКТ', clock: [7, 0, 0], flashStart: true, noCap: true }],
+  [39.96, 'orbit', (t, d, S) => { S.cards.forEach(m => { const i = m.userData.i; const a = i / 10 * Math.PI * 2 + t * .6; m.position.set(Math.cos(a) * 2.9, Math.sin(a) * .35 - 1.25, Math.sin(a) * 2.9); m.lookAt(cam.position); const hl = i === 3; m.scale.setScalar(hl ? 1.25 : 1); }); S.face.position.y = .45 + .05 * Math.sin(t * 2); S.face.lookAt(cam.position); S.rings.forEach((r, i) => r.rotation.z = t * (.2 + i * .1)); { const a = -.35 + t * .2; look(Math.sin(a) * 9.6, L(1.8, 1.0, t / d), Math.cos(a) * 9.6, 0, -.2, 0, 40); }; }, { label: 'ЧТО ВНУТРИ · НЕЙРОСЕТЬ', clock: [7, 0, 3] }],
+  [43.42, 'course', (t, d, S) => { S.steps.forEach((s, i) => { const k = E.out5(pr(t, .1 + i * .22, .35)); s.visible = k > 0; s.position.set(L(-6, i * .25, k), i * .45 + .2, -i * 1.0); }); S.title.position.set(0, 3.9, -6); S.title.lookAt(cam.position); S.title.visible = t > .2; const k = E.inout(t / d); look(L(5.8, 4.0, k), L(1.6, 4.4, k), L(7.6, 4.6, k), L(0, .6, k), L(.6, 2.2, k), L(-1, -3.6, k), 44); }, { label: 'ЧТО ВНУТРИ · ОБУЧЕНИЕ', clock: [7, 0, 7] }],
+  [46.04, 'price', (t, d, S) => { const k = E.back(pr(t, 0, .6), 1.2); S.slab.rotation.set(L(-.9, -.04, k), L(1.2, -.08, k), 0); S.slab.position.y = .05 * Math.sin(t * 2); look(0, 0, L(9.6, 8.6, E.out(t / d)), 0, 0, 0, 36); }, { label: 'ПОДПИСКА', clock: [7, 0, 13], noCap: true }],
+  [48.24, 'brand', (t, d, S) => {
+    S.rays.forEach((r, i) => { r.rotation.z = i / 16 * Math.PI * 2 - t * .1; r.material.opacity = .1; });
+    S.ch.scale.setScalar(1); S.ch.position.set(0, .9 + .05 * Math.sin(t * 2), 0); S.ch.rotation.z = Math.sin(t * 1.6) * .03;
+    S.logo.visible = true; S.logo.scale.setScalar(1.1); S.logo.position.set(0, -1.75, .5); S.sub.visible = false;
+    S.btn.visible = true; const bk = E.back(pr(t, .15, .4)); S.btn.scale.set(Math.max(.01, bk) * (1 + .04 * Math.sin(t * 7)), Math.max(.01, bk) * (1 + .04 * Math.sin(t * 7)), 1); S.btn.position.set(0, -2.75, .6);
+    S.price.visible = t > .5; S.price.position.set(0, -3.4, .6);
+    S.parts.forEach(p => { const u = p.userData; p.position.set(u.x, ((u.y + t * u.sp) % 12 + 12) % 12 - 6, u.z); });
+    look(Math.sin(t * .3) * .4, -.6, L(9.4, 9.0, t / d), 0, -.9, 0, 40);
+  }, { label: 'ССЫЛКА В ПРОФИЛЕ', clock: [7, 0, 21], noCap: true }],
+];
+const END = 52.6;
+
+// ---------------------------------------------------------------- captions & HUD
+let WORDS = [], GROUPS = [];
+const ACCENT = new Set(['семь', 'вибрирует', 'нейросеть', 'миллиона', 'россии', 'одно', '80', '55', '4', '3', 'заберут', 'ссылку', 'звонишь', 'едешь', 'проверяешь', 'торгуешься', '52', '77', '25', 'один', 'перекупы', 'выгодные', 'обучение', 'нуля', '2000', 'профиле', 'другой', 'iphone']);
+function buildGroups() {
+  const ws = WORDS.map(w => ({ ...w, w: w.w.replace(/^-/, '') }));
+  // glue "кто" + "-то"
+  const merged = []; for (const w of ws) { if (w.w === 'то' && merged.length && merged[merged.length - 1].w === 'кто') { merged[merged.length - 1].w = 'кто-то'; merged[merged.length - 1].e = w.e; } else merged.push(w); }
+  let cur = [];
+  merged.forEach((w, i) => { const clean = w.w.replace(/[.,!?«»—:]/g, ''); const prev = merged[i - 1]; const gap = prev ? w.s - prev.e : 0; const chars = cur.reduce((s, x) => s + x.t.length + 1, 0) + clean.length; const endPunct = prev && /[.,!?]$/.test(prev.w); if (cur.length && (cur.length >= 2 || gap > .18 || chars > 14 || endPunct)) { GROUPS.push(cur); cur = []; } cur.push({ t: clean, s: w.s, e: w.e, acc: ACCENT.has(clean.toLowerCase()) }); });
+  if (cur.length) GROUPS.push(cur);
+}
+function drawCaption(g, t) {
+  let cur = null;
+  for (let i = 0; i < GROUPS.length; i++) { const gr = GROUPS[i]; const end = i + 1 < GROUPS.length ? Math.min(GROUPS[i + 1][0].s, gr[gr.length - 1].e + .6) : gr[gr.length - 1].e + .6; if (t >= gr[0].s - .05 && t < end) cur = gr; }
+  if (!cur) return;
+  let size = 128; g.font = font(size, 700);
+  const sp = () => g.measureText(' ').width * 1.5;
+  let widths = cur.map(w => g.measureText(w.t.toUpperCase()).width); let total = widths.reduce((a, b) => a + b, 0) + sp() * (cur.length - 1);
+  if (total > 960) { size = Math.floor(size * 960 / total); g.font = font(size, 700); widths = cur.map(w => g.measureText(w.t.toUpperCase()).width); total = widths.reduce((a, b) => a + b, 0) + sp() * (cur.length - 1); }
+  let x = W / 2 - total / 2; const y = 1530;
+  cur.forEach((w, i) => {
+    if (t >= w.s - .05) {
+      const k = pr(t, w.s - .05, .12); const s = L(1.18, 1, E.out(k)); const cx = x + widths[i] / 2;
+      g.save(); g.translate(cx, y); g.scale(s, s); g.font = font(size, 700); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+      g.lineJoin = 'round'; g.lineWidth = 14; g.strokeStyle = 'rgba(0,0,0,.85)'; g.strokeText(w.t.toUpperCase(), 0, 0);
+      g.fillStyle = w.acc ? CSS.yel : CSS.paper; g.globalAlpha = cl(k * 3); g.fillText(w.t.toUpperCase(), 0, 0); g.restore();
+    }
+    x += widths[i] + sp();
+  });
+}
+function drawHUD(g, shot, lt) {
+  const o = shot[3]; if (!o.label) return;
+  g.textAlign = 'left'; g.textBaseline = 'alphabetic'; g.font = font(28, 800, 'Mono'); g.fillStyle = CSS.org; g.fillText(o.label, 48, 76);
+  g.font = font(20, 600, 'Mono'); g.fillStyle = '#566275'; g.fillText('ПЕРЕКУПЫ', 48, 108);
+  const [h, m, s] = o.clock; const tot = h * 3600 + m * 60 + s + Math.floor(lt);
+  g.textAlign = 'right'; g.font = font(36, 600, 'Mono'); g.fillStyle = CSS.paper; g.fillText(`${String(Math.floor(tot / 3600) % 24).padStart(2, '0')}:${String(Math.floor(tot / 60) % 60).padStart(2, '0')}:${String(tot % 60).padStart(2, '0')}`, W - 48, 76);
+}
+// vignette + grain
+const vig = document.createElement('canvas'); vig.width = W; vig.height = H;
+{ const g = vig.getContext('2d'); const gr = g.createRadialGradient(W / 2, H * .45, H * .25, W / 2, H * .5, H * .78); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,.78)'); g.fillStyle = gr; g.fillRect(0, 0, W, H); const g2 = g.createLinearGradient(0, H * .68, 0, H); g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(0,0,0,.6)'); g.fillStyle = g2; g.fillRect(0, H * .68, W, H * .32); }
+const grain = document.createElement('canvas'); grain.width = 512; grain.height = 512;
+{ const g = grain.getContext('2d'); const id = g.createImageData(512, 512); const r = rng(1); for (let i = 0; i < id.data.length; i += 4) { const v = r() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 22; } g.putImageData(id, 0, 0); }
+
+// ---------------------------------------------------------------- render
+function shotAt(t) { let i = 0; for (let k = 0; k < SHOTS.length; k++) if (t >= SHOTS[k][0]) i = k; return i; }
+function renderScene(t) {
+  const i = shotAt(t); const sh = SHOTS[i]; const st = sh[0], en = i + 1 < SHOTS.length ? SHOTS[i + 1][0] : END; const lt = t - st, d = en - st;
+  for (const k in sets) sets[k].g.visible = false;
+  if (!sh[1]) { scene.fog = null; scene.background = new THREE.Color(0); renderer.render(scene, cam); return { sh, lt, d }; }
+  const S = sets[sh[1]]; S.g.visible = true; scene.fog = S.g.fog || null; scene.background = new THREE.Color(0x05080d);
+  sh[2](lt, d, S);
+  renderer.render(scene, cam);
+  return { sh, lt, d };
+}
+window.renderAt = (t, fps = 60) => {
+  const i = shotAt(t); const o = SHOTS[i][3]; const n = o.mb || 1; const st = SHOTS[i][0];
+  octx.globalAlpha = 1; octx.globalCompositeOperation = 'source-over'; octx.filter = 'none';
+  let info;
+  for (let s = 0; s < n; s++) {
+    const ts = Math.max(st, t + (s / n) * (0.5 / fps));
+    info = renderScene(ts);
+    octx.globalAlpha = 1 / (s + 1);
+    if (o.grade === 'grey') octx.filter = 'saturate(0.15) brightness(0.9)'; else if (o.tint === 'evening') octx.filter = 'hue-rotate(-12deg) saturate(1.2)'; else octx.filter = 'none';
+    octx.drawImage(renderer.domElement, 0, 0);
+  }
+  octx.filter = 'none'; octx.globalAlpha = 1;
+  const { sh, lt, d } = info;
+  // flashes / fades
+  if (o.flashEnd && lt > d - .12) { octx.fillStyle = `rgba(255,236,170,${pr(lt, d - .12, .12) * .9})`; octx.fillRect(0, 0, W, H); }
+  if (o.flashStart && lt < .2) { octx.fillStyle = `rgba(255,230,160,${(1 - lt / .2) * .95})`; octx.fillRect(0, 0, W, H); }
+  if (i > 0 && lt < .1 && !o.flashStart && SHOTS[i - 1][3].flashEnd) { octx.fillStyle = `rgba(255,236,170,${(1 - lt / .1) * .8})`; octx.fillRect(0, 0, W, H); }
+  if (o.fadeOut && lt > d - o.fadeOut) { octx.fillStyle = `rgba(0,0,0,${pr(lt, d - o.fadeOut, o.fadeOut)})`; octx.fillRect(0, 0, W, H); }
+  if (t > END - .5) { octx.fillStyle = `rgba(0,0,0,${pr(t, END - .5, .5)})`; octx.fillRect(0, 0, W, H); }
+  octx.drawImage(vig, 0, 0);
+  const gx = Math.floor((t * 977) % 512), gy = Math.floor((t * 613) % 512);
+  octx.globalCompositeOperation = 'overlay'; octx.fillStyle = octx.createPattern(grain, 'repeat'); octx.save(); octx.translate(-gx, -gy); octx.fillRect(gx, gy, W, H); octx.restore(); octx.globalCompositeOperation = 'source-over';
+  drawHUD(octx, sh, lt);
+  if (!o.noCap) drawCaption(octx, t);
+  return true;
+};
+window.frameJPEG = (q = .93) => out.toDataURL('image/jpeg', q);
+window.END = END;
+
+(async () => {
+  await Promise.all([document.fonts.load('700 50px Osw'), document.fonts.load('500 50px Osw'), document.fonts.load('800 50px Mono'), document.fonts.load('50px Russo'), loadImg('face', 'img/face.png'), loadImg('char', 'img/char.png')]);
+  WORDS = await (await fetch('words.json')).json(); buildGroups();
+  // build sets that need images now
+  buildSets();
+  // warm up: compile every set once
+  for (const s of SHOTS) { renderAt(s[0] + .01); }
+  window.ready = true;
+})();
+</script>
+</body>
+</html>
